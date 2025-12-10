@@ -1,9 +1,10 @@
 export const config = { runtime: "nodejs" };
 
-import { getActivePairs, toCoinglassSymbol } from "../utils/pairsStore.js";
+import { getActivePairs } from "../utils/pairsStore.js";
 import { sendTelegramMessage } from "../utils/telegram.js";
 import { buildTradingViewLink } from "../utils/tradingview.js";
-import { getFunding, getOI, getLongShort, getLiqMap } from "../utils/coinglass.js";
+import { getFunding, getOI, getLongShort } from "../utils/futures.js";
+import { getLiquidityMap } from "../utils/liquidity.js";
 import { detectPumpDump } from "../utils/pumpdump.js";
 import { detectWhales } from "../utils/whale.js";
 import { detectArbitrage } from "../utils/arbitrage.js";
@@ -26,19 +27,6 @@ async function fetchFallbackPrice(symbol) {
       const j = await r.json();
       const p = Number(j.price);
       if (Number.isFinite(p)) return p;
-    }
-  } catch {}
-  try {
-    const id = symbol.replace("USDT", "").toLowerCase().replace("1000", "");
-    const r = await fetch(
-      `https://api.coingecko.com/api/v3/simple/price?ids=${id}&vs_currencies=usd`
-    );
-    if (r.ok) {
-      const j = await r.json();
-      if (j[id]?.usd) {
-        const p = Number(j[id].usd);
-        if (Number.isFinite(p)) return p;
-      }
     }
   } catch {}
   return null;
@@ -128,7 +116,7 @@ export default async function handler(req, res) {
         getFunding(symbol),
         getOI(symbol),
         getLongShort(symbol),
-        getLiqMap(toCoinglassSymbol(symbol), price),
+        getLiquidityMap(symbol, price),
         detectWhales(symbol),
         detectArbitrage(symbol),
         detectManipulation(symbol)
@@ -176,7 +164,7 @@ export default async function handler(req, res) {
     }
 
     if (!infos.length) {
-      await sendTelegramMessage("⚠️ Fiyat verisi alınamadı, Binance/MEXC/Coingecko erişimini kontrol et.");
+      await sendTelegramMessage("⚠️ Fiyat verisi alınamadı, Binance/MEXC erişimini kontrol et.");
       return res.status(200).json({ ok: true, count: 0 });
     }
 
@@ -184,10 +172,10 @@ export default async function handler(req, res) {
     for (const x of infos) {
       snap += `<b>${x.symbol}</b> — ${x.price.toFixed(2)}\n`;
       if (x.liq.nearestLong) {
-        snap += `• Long: ${x.liq.nearestLong.price.toFixed(2)} (${x.liq.nearestLong.dist.toFixed(2)}%)\n`;
+        snap += `• Bid Cluster: ${x.liq.nearestLong.price.toFixed(2)} (${x.liq.nearestLong.dist.toFixed(2)}%)\n`;
       }
       if (x.liq.nearestShort) {
-        snap += `• Short: ${x.liq.nearestShort.price.toFixed(2)} (${x.liq.nearestShort.dist.toFixed(2)}%)\n`;
+        snap += `• Ask Cluster: ${x.liq.nearestShort.price.toFixed(2)} (${x.liq.nearestShort.dist.toFixed(2)}%)\n`;
       }
       snap += "\n";
     }
@@ -233,8 +221,8 @@ OI: ${x.oiNow != null ? x.oiNow.toFixed(0) : "N/A"}
 Long/Short: ${x.longShort != null ? x.longShort.toFixed(2) : "N/A"}
 Arb: ${x.arb.spreadPct.toFixed(3)}% (${x.arb.side || "N/A"})
 
-Liq Long: ${x.liq.nearestLong ? x.liq.nearestLong.price.toFixed(2) + " (" + x.liq.nearestLong.dist.toFixed(2) + "%)" : "N/A"}
-Liq Short: ${x.liq.nearestShort ? x.liq.nearestShort.price.toFixed(2) + " (" + x.liq.nearestShort.dist.toFixed(2) + "%)" : "N/A"}
+Bid Cluster: ${x.liq.nearestLong ? x.liq.nearestLong.price.toFixed(2) + " (" + x.liq.nearestLong.dist.toFixed(2) + "%)" : "N/A"}
+Ask Cluster: ${x.liq.nearestShort ? x.liq.nearestShort.price.toFixed(2) + " (" + x.liq.nearestShort.dist.toFixed(2) + "%)" : "N/A"}
 
 Whale trades: ${x.whales.whaleScore}
 Pump/Dump: ${x.pumpDump.label || "Yok"}
