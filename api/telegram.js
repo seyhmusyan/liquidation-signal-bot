@@ -1,7 +1,7 @@
 import { addPair, removePair, getActivePairs } from "../../utils/pairsStore";
 import { sendTelegramMessage } from "../../utils/telegram";
 
-export const config = { runtime: "edge" };
+export const config = { runtime: "nodejs" };
 
 export default async function handler(req) {
   const body = await req.json();
