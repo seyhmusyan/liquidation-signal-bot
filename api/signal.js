@@ -1,7 +1,7 @@
 import { getActivePairs } from "../utils/pairsStore.js";
 import { getMarket, inferBaseFromMarketSymbol } from "./providers/market";
 import { getCombinedHeatmap } from "./providers/heatmap";
-import { buildSignal } from "./../strategy";
+import { buildSignal } from "./strategy.js";
 import { sendTelegramMessage } from "../../utils/telegram";
 import { buildTradingViewLink } from "../../utils/tradingview";
 
