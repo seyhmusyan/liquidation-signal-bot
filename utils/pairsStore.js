@@ -13,11 +13,6 @@ export async function removePair() {
   return PAIRS;
 }
 
-export function toCoinglassSymbol(symbol) {
-  if (!symbol) return null;
-  if (symbol.endsWith("USDT")) {
-    const base = symbol.slice(0, -4);
-    return base.replace("1000", "");
-  }
+export function toSymbol(symbol) {
   return symbol;
 }

@@ -11,7 +11,7 @@ export function computeMMYON({
   const notes = [];
 
   if (liqScore != null && liqScore > 0.7) {
-    notes.push("Güçlü likidasyon cluster aktif");
+    notes.push("Güçlü likidasyon/likidite cluster aktif");
   }
 
   if (oiBias > 0.05) {
