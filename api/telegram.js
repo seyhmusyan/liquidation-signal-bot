@@ -1,32 +1,74 @@
+export const config = { runtime: "nodejs18.x" };
+
 import { addPair, removePair, getActivePairs } from "../utils/pairsStore.js";
-import { sendTelegramMessage } from "../../utils/telegram";
+import { sendTelegramMessage } from "../utils/telegram.js";
 
-export const config = { runtime: "nodejs" };
+function parseBody(req) {
+  if (req.body) return req.body;
+  return new Promise((resolve) => {
+    let data = "";
+    req.on("data", (chunk) => (data += chunk));
+    req.on("end", () => {
+      try {
+        resolve(JSON.parse(data));
+      } catch {
+        resolve({});
+      }
+    });
+  });
+}
 
-export default async function handler(req) {
-  const body = await req.json();
+export default async function handler(req, res) {
+  if (req.method !== "POST") {
+    res.status(200).json({ ok: true });
+    return;
+  }
+
+  const body = await parseBody(req);
   const msg = body.message;
-  if (!msg) return new Response("OK");
+  if (!msg || !msg.text) {
+    res.status(200).json({ ok: true });
+    return;
+  }
 
-  const chatId = msg.chat.id;
-  const text = msg.text;
+  const text = msg.text.trim();
+  const chatId = msg.chat?.id;
+
+  async function reply(t) {
+    await sendTelegramMessage(t, chatId);
+  }
 
   if (text === "/pairs") {
     const pairs = await getActivePairs();
-    return sendTelegramMessage("📊 Aktif Coinler:\n" + pairs.map(x => "• " + x).join("\n"), chatId);
+    await reply("📊 Aktif Pariteler:\n" + pairs.map((p) => "• " + p).join("\n"));
+    res.status(200).json({ ok: true });
+    return;
   }
 
   if (text.startsWith("/add ")) {
-    const p = text.split(" ")[1];
-    const list = await addPair(p);
-    return sendTelegramMessage(`Eklendi: ${list.join(", ")}`, chatId);
+    const symbol = text.split(" ")[1];
+    if (!symbol) {
+      await reply("Kullanim: /add BTCUSDT");
+    } else {
+      const pairs = await addPair(symbol);
+      await reply("Eklendi. Yeni liste:\n" + pairs.join(", "));
+    }
+    res.status(200).json({ ok: true });
+    return;
   }
 
   if (text.startsWith("/remove ")) {
-    const p = text.split(" ")[1];
-    const list = await removePair(p);
-    return sendTelegramMessage(`Silindi: ${list.join(", ")}`, chatId);
+    const symbol = text.split(" ")[1];
+    if (!symbol) {
+      await reply("Kullanim: /remove BTCUSDT");
+    } else {
+      const pairs = await removePair(symbol);
+      await reply("Silindi. Yeni liste:\n" + pairs.join(", "));
+    }
+    res.status(200).json({ ok: true });
+    return;
   }
 
-  return sendTelegramMessage("Komutlar:\n/pairs\n/add BTCUSDT\n/remove BTCUSDT", chatId);
+  await reply("Komutlar:\n/pairs\n/add BTCUSDT\n/remove BTCUSDT");
+  res.status(200).json({ ok: true });
 }
