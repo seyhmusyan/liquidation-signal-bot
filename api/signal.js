@@ -40,7 +40,7 @@ export default async function handler(req, res) {
     output.push({ symbol, price, changePct, funding, oi, ls, liq });
   }
 
-  // Telegram'a gönder
+  // Telegram mesajı
   let msg = "📊 <b>Analiz</b>\n\n";
 
   for (const x of output) {
@@ -51,7 +51,7 @@ Fiyat: ${x.price}
 Funding: ${x.funding ?? "N/A"}
 OI: ${x.oi ?? "N/A"}
 L/S: ${x.ls ?? "N/A"}
-Liq: ${x.liq?.nearestLong?.price ?? "?"} / ${x.liq?.nearestShort?.price ?? "?""}
+Liq: ${x.liq?.nearestLong?.price ?? "?"} / ${x.liq?.nearestShort?.price ?? "?"}
 `;
   }
 
