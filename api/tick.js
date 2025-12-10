@@ -11,7 +11,6 @@ export default async function handler(req, res) {
       return res.status(200).json({ ok: false, reason: "VERCEL_URL missing" });
     }
 
-    // 4 calls per minute ~ every 15s
     for (let i = 0; i < 4; i++) {
       await fetch(base + "/api/signal");
       if (i < 3) await wait(15000);
