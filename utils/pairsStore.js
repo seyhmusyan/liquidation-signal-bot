@@ -1,16 +1,14 @@
-// SABİT VE KİLİTLİ PAIR LİSTESİ
 const PAIRS = ["BTCUSDT", "AVAXUSDT"];
 
 export async function getActivePairs() {
   return PAIRS;
 }
 
-// /addpair KAPALI
+// locked: do nothing, just return fixed pairs
 export async function addPair() {
   return PAIRS;
 }
 
-// /rmpair KAPALI
 export async function removePair() {
   return PAIRS;
 }
