@@ -4,11 +4,11 @@ export function detectPumpDump({ changePct, volSpike }) {
   const notes = [];
 
   if (changePct > 0.3) {
-    pumpScore += (changePct / 0.3);
+    pumpScore += changePct / 0.3;
     notes.push("Fiyat kısa sürede güçlü yukarı hareket");
   }
   if (changePct < -0.3) {
-    dumpScore += (Math.abs(changePct) / 0.3);
+    dumpScore += Math.abs(changePct) / 0.3;
     notes.push("Fiyat kısa sürede güçlü aşağı hareket");
   }
 

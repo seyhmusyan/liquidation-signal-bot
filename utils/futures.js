@@ -32,6 +32,7 @@ export async function getOI(symbol) {
   }
 }
 
+// basic Binance taker long/short, used as first layer if available
 export async function getLongShort(symbol) {
   try {
     const r = await fetch(

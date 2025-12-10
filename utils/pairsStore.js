@@ -4,7 +4,6 @@ export async function getActivePairs() {
   return PAIRS;
 }
 
-// locked: do nothing, just return fixed pairs
 export async function addPair() {
   return PAIRS;
 }
