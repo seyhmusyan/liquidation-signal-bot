@@ -1,74 +1,48 @@
-export const config = { runtime: "nodejs18.x" };
+export const config = { runtime: "nodejs" };
 
 import { addPair, removePair, getActivePairs } from "../utils/pairsStore.js";
 import { sendTelegramMessage } from "../utils/telegram.js";
 
-function parseBody(req) {
+function parse(req) {
   if (req.body) return req.body;
-  return new Promise((resolve) => {
-    let data = "";
-    req.on("data", (chunk) => (data += chunk));
-    req.on("end", () => {
-      try {
-        resolve(JSON.parse(data));
-      } catch {
-        resolve({});
-      }
-    });
+  return new Promise((resolve)=> {
+    let d=""; req.on("data",c=>d+=c);
+    req.on("end",()=>{ try{resolve(JSON.parse(d));}catch{resolve({});} });
   });
 }
 
 export default async function handler(req, res) {
-  if (req.method !== "POST") {
-    res.status(200).json({ ok: true });
-    return;
-  }
+  if (req.method !== "POST") return res.json({ ok:true });
 
-  const body = await parseBody(req);
+  const body = await parse(req);
   const msg = body.message;
-  if (!msg || !msg.text) {
-    res.status(200).json({ ok: true });
-    return;
-  }
+  if (!msg?.text) return res.json({ ok:true });
 
-  const text = msg.text.trim();
-  const chatId = msg.chat?.id;
+  const t = msg.text.trim();
+  const chat = msg.chat.id;
 
-  async function reply(t) {
-    await sendTelegramMessage(t, chatId);
-  }
+  const reply = (m)=> sendTelegramMessage(m, chat);
 
-  if (text === "/pairs") {
+  if (t === "/pairs") {
     const pairs = await getActivePairs();
-    await reply("📊 Aktif Pariteler:\n" + pairs.map((p) => "• " + p).join("\n"));
-    res.status(200).json({ ok: true });
-    return;
+    await reply("Pairs:\n" + pairs.join("\n"));
+    return res.json({ ok:true });
   }
 
-  if (text.startsWith("/add ")) {
-    const symbol = text.split(" ")[1];
-    if (!symbol) {
-      await reply("Kullanim: /add BTCUSDT");
-    } else {
-      const pairs = await addPair(symbol);
-      await reply("Eklendi. Yeni liste:\n" + pairs.join(", "));
-    }
-    res.status(200).json({ ok: true });
-    return;
+  if (t.startsWith("/add ")) {
+    const s = t.split(" ")[1];
+    const pairs = await addPair(s);
+    await reply("Added:\n" + pairs.join(", "));
+    return res.json({ ok:true });
   }
 
-  if (text.startsWith("/remove ")) {
-    const symbol = text.split(" ")[1];
-    if (!symbol) {
-      await reply("Kullanim: /remove BTCUSDT");
-    } else {
-      const pairs = await removePair(symbol);
-      await reply("Silindi. Yeni liste:\n" + pairs.join(", "));
-    }
-    res.status(200).json({ ok: true });
-    return;
+  if (t.startsWith("/remove ")) {
+    const s = t.split(" ")[1];
+    const pairs = await removePair(s);
+    await reply("Removed:\n" + pairs.join(", "));
+    return res.json({ ok:true });
   }
 
-  await reply("Komutlar:\n/pairs\n/add BTCUSDT\n/remove BTCUSDT");
-  res.status(200).json({ ok: true });
+  await reply("Commands:\n/pairs\n/add BTCUSDT\n/remove BTCUSDT");
+  res.json({ ok:true });
 }
