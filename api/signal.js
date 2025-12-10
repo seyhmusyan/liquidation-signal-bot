@@ -3,7 +3,7 @@ export const config = { runtime: "nodejs" };
 import { getActivePairs } from "../utils/pairsStore.js";
 import { sendTelegramMessage } from "../utils/telegram.js";
 import { buildTradingViewLink } from "../utils/tradingview.js";
-import { getFunding, getOI, getLongShort } from "../utils/futures.js";
+import { getFunding, getOI } from "../utils/futures.js";
 import { getLiquidityMap } from "../utils/liquidity.js";
 import { detectPumpDump } from "../utils/pumpdump.js";
 import { detectWhales } from "../utils/whale.js";
@@ -11,6 +11,7 @@ import { detectArbitrage } from "../utils/arbitrage.js";
 import { detectManipulation } from "../utils/manipulation.js";
 import { interpretOiFunding } from "../utils/oi_funding.js";
 import { computeMMYON } from "../utils/mmbrain.js";
+import { getAdvancedLSR } from "../utils/lsr.js";
 
 async function fetchFallbackPrice(symbol) {
   try {
@@ -112,10 +113,9 @@ export default async function handler(req, res) {
         continue;
       }
 
-      const [funding, oiNow, ls, liq, whales, arb, manip] = await Promise.all([
+      const [funding, oiNow, liq, whales, arb, manip] = await Promise.all([
         getFunding(symbol),
         getOI(symbol),
-        getLongShort(symbol),
         getLiquidityMap(symbol, price),
         detectWhales(symbol),
         detectArbitrage(symbol),
@@ -129,6 +129,12 @@ export default async function handler(req, res) {
         oiPrev: oiNow,
         priceChange: changePct,
         funding
+      });
+
+      const lsr = await getAdvancedLSR(symbol, {
+        funding,
+        oiBias: oiInterp.bias,
+        whales
       });
 
       const mm = computeMMYON({
@@ -150,7 +156,7 @@ export default async function handler(req, res) {
         volSpike,
         funding,
         oiNow,
-        longShort: ls,
+        lsr,
         liq,
         whales,
         arb,
@@ -218,7 +224,7 @@ MMYON: <b>${x.mm.mmDir}</b>
 Fiyat: ${x.price.toFixed(2)} (${x.changePct.toFixed(2)}% 1m)
 Funding: ${x.funding != null ? x.funding.toFixed(5) : "N/A"}
 OI: ${x.oiNow != null ? x.oiNow.toFixed(0) : "N/A"}
-Long/Short: ${x.longShort != null ? x.longShort.toFixed(2) : "N/A"}
+Long/Short: ${x.lsr ? x.lsr.ratio.toFixed(2) + " (" + x.lsr.source + ")" : "N/A"}
 Arb: ${x.arb.spreadPct.toFixed(3)}% (${x.arb.side || "N/A"})
 
 Bid Cluster: ${x.liq.nearestLong ? x.liq.nearestLong.price.toFixed(2) + " (" + x.liq.nearestLong.dist.toFixed(2) + "%)" : "N/A"}
