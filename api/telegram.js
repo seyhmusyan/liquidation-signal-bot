@@ -1,4 +1,4 @@
-import { addPair, removePair, getActivePairs } from "../../utils/pairsStore";
+import { addPair, removePair, getActivePairs } from "../utils/pairsStore.js";
 import { sendTelegramMessage } from "../../utils/telegram";
 
 export const config = { runtime: "nodejs" };
