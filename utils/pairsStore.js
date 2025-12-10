@@ -1,12 +1,9 @@
-// TEMP MEMORY STORE (Redis yoksa burası çalışır)
 let PAIRS = ["BTCUSDT", "ETHUSDT", "SOLUSDT"];
 
-// Get list
 export async function getActivePairs() {
   return PAIRS;
 }
 
-// Add a new coin
 export async function addPair(symbol) {
   symbol = symbol.toUpperCase();
   if (!PAIRS.includes(symbol)) {
@@ -15,9 +12,8 @@ export async function addPair(symbol) {
   return PAIRS;
 }
 
-// Remove coin
 export async function removePair(symbol) {
   symbol = symbol.toUpperCase();
-  PAIRS = PAIRS.filter(p => p !== symbol);
+  PAIRS = PAIRS.filter((p) => p !== symbol.toUpperCase());
   return PAIRS;
 }

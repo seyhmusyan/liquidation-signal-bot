@@ -1,18 +1,31 @@
-const TOKEN = process.env.TELEGRAM_TOKEN;
-const DEFAULT_CHAT = process.env.TELEGRAM_CHAT;
+export async function sendTelegramMessage(text, chatIdOverride) {
+  const token = process.env.TELEGRAM_TOKEN;
+  const defaultChat = process.env.TELEGRAM_CHAT;
 
-export async function sendTelegramMessage(text, chatId) {
-  const target = chatId || DEFAULT_CHAT;
-  if (!TOKEN || !target) return;
+  if (!token) {
+    console.log("TELEGRAM_TOKEN missing");
+    return;
+  }
+  const chatId = chatIdOverride || defaultChat;
+  if (!chatId) {
+    console.log("TELEGRAM_CHAT missing");
+    return;
+  }
 
-  await fetch(`https://api.telegram.org/bot${TOKEN}/sendMessage`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      chat_id: target,
-      text,
-      parse_mode: "HTML",
-      disable_web_page_preview: false
-    })
-  });
+  const url = `https://api.telegram.org/bot${token}/sendMessage`;
+
+  try {
+    await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chat_id: chatId,
+        text,
+        parse_mode: "HTML",
+        disable_web_page_preview: false
+      })
+    });
+  } catch (e) {
+    console.error("Telegram send error", e);
+  }
 }
