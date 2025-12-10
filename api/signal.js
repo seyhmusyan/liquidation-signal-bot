@@ -5,7 +5,7 @@ import { buildSignal } from "./../strategy";
 import { sendTelegramMessage } from "../../utils/telegram";
 import { buildTradingViewLink } from "../../utils/tradingview";
 
-export const config = { runtime: "edge" };
+export const config = { runtime: "nodejs" };
 
 export default async function handler() {
   const pairs = await getActivePairs();
