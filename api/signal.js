@@ -5,27 +5,91 @@ import { sendTelegramMessage } from "../utils/telegram.js";
 import { buildTradingViewLink } from "../utils/tradingview.js";
 import { getFunding, getOI, getLongShort, getLiqMap } from "../utils/coinglass.js";
 
+// -----------------------------
+// FİYAT FALLBACK ENGINE
+// -----------------------------
+async function fetchFallbackPrice(symbol) {
+  // 1) Binance ticker
+  try {
+    const r = await fetch(`https://api.binance.com/api/v3/ticker/price?symbol=${symbol}`);
+    if (r.ok) {
+      const j = await r.json();
+      const p = Number(j.price);
+      if (Number.isFinite(p)) return p;
+    }
+  } catch {}
+
+  // 2) MEXC ticker
+  try {
+    const r = await fetch(`https://api.mexc.com/api/v3/ticker/price?symbol=${symbol}`);
+    if (r.ok) {
+      const j = await r.json();
+      const p = Number(j.price);
+      if (Number.isFinite(p)) return p;
+    }
+  } catch {}
+
+  // 3) Coingecko
+  try {
+    const id = symbol.replace("USDT", "").toLowerCase().replace("1000", "");
+    const r = await fetch(
+      `https://api.coingecko.com/api/v3/simple/price?ids=${id}&vs_currencies=usd`
+    );
+    if (r.ok) {
+      const j = await r.json();
+      if (j[id]?.usd) {
+        const p = Number(j[id].usd);
+        if (Number.isFinite(p)) return p;
+      }
+    }
+  } catch {}
+
+  return null;
+}
+
+// -----------------------------
+// Binance 1m + fallback
+// -----------------------------
 async function fetchBinance1m(symbol) {
   try {
     const r = await fetch(
       `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=1m&limit=2`
     );
+
     if (!r.ok) {
-      return { price: null, changePct: 0 };
+      const fp = await fetchFallbackPrice(symbol);
+      return { price: fp, changePct: 0 };
     }
+
     const data = await r.json();
+    if (!Array.isArray(data) || data.length < 2) {
+      const fp = await fetchFallbackPrice(symbol);
+      return { price: fp, changePct: 0 };
+    }
+
     const prev = Number(data[0][4]);
     const last = Number(data[1][4]);
-    if (!Number.isFinite(prev) || !Number.isFinite(last) || prev === 0) {
-      return { price: last, changePct: 0 };
+
+    let price = last;
+    if (!Number.isFinite(price)) price = await fetchFallbackPrice(symbol);
+
+    if (!Number.isFinite(price) || !Number.isFinite(prev) || prev === 0) {
+      const fp = await fetchFallbackPrice(symbol);
+      return { price: fp, changePct: 0 };
     }
-    return { price: last, changePct: (last - prev) / prev * 100 };
+
+    const changePct = (price - prev) / prev * 100;
+    return { price, changePct };
   } catch (e) {
     console.error("Binance 1m error", symbol, e);
-    return { price: null, changePct: 0 };
+    const fp = await fetchFallbackPrice(symbol);
+    return { price: fp, changePct: 0 };
   }
 }
 
+// -----------------------------
+// MEXC metrics
+// -----------------------------
 async function fetchMexcMetrics(symbol) {
   let mexOb = 0.5;
   let mexMom = 0.5;
@@ -34,8 +98,8 @@ async function fetchMexcMetrics(symbol) {
     const d = await fetch(
       `https://api.mexc.com/api/v3/depth?symbol=${symbol}&limit=50`
     ).then(r => r.json());
-    const bids = d.bids?.slice(0, 10).reduce((a,b)=>a+Number(b[1]),0) || 0;
-    const asks = d.asks?.slice(0, 10).reduce((a,b)=>a+Number(b[1]),0) || 0;
+    const bids = d.bids?.slice(0, 10).reduce((a, b) => a + Number(b[1]), 0) || 0;
+    const asks = d.asks?.slice(0, 10).reduce((a, b) => a + Number(b[1]), 0) || 0;
     if (bids + asks > 0) mexOb = bids / (bids + asks);
   } catch (e) {
     console.error("MEXC depth error", symbol, e);
@@ -61,6 +125,9 @@ async function fetchMexcMetrics(symbol) {
   return { mexOb, mexMom };
 }
 
+// -----------------------------
+// MM Brain
+// -----------------------------
 function computeMMBrain({ nearestLong, nearestShort, funding, longShort }) {
   let scoreLong = 0;
   let scoreShort = 0;
@@ -102,6 +169,9 @@ function computeMMBrain({ nearestLong, nearestShort, funding, longShort }) {
   return { mmDir, scoreLong, scoreShort, notes };
 }
 
+// -----------------------------
+// Combined score
+// -----------------------------
 function buildCombinedScore({ cgScore, mexOb, mexMom, mmDir }) {
   let base = cgScore ?? 0.5;
   base = base * 0.6 + (mexOb ?? 0.5) * 0.2 + (mexMom ?? 0.5) * 0.2;
@@ -110,10 +180,13 @@ function buildCombinedScore({ cgScore, mexOb, mexMom, mmDir }) {
   return Math.max(0, Math.min(1, base));
 }
 
+// -----------------------------
+// Basit PRO signal
+// -----------------------------
 function buildSignal({ symbol, price, score }) {
   if (!Number.isFinite(price)) return null;
   const s = Math.max(0, Math.min(1, score || 0.5));
-  let confidence = Math.round(40 + s * 60);
+  const confidence = Math.round(40 + s * 60);
   if (confidence < 60) return null;
 
   const side = s >= 0.5 ? "LONG" : "SHORT";
@@ -125,8 +198,12 @@ function buildSignal({ symbol, price, score }) {
   return { symbol, side, entry: price, tp1, tp2, sl, confidence };
 }
 
+// -----------------------------
+// MAIN HANDLER (Telegram + Analiz)
+// -----------------------------
 export default async function handler(req, res) {
   try {
+    // TELEGRAM WEBHOOK KOMUTLARI
     if (req.method === "POST" && req.body?.message) {
       const msg = req.body.message;
       const chatId = msg.chat.id;
@@ -176,12 +253,16 @@ export default async function handler(req, res) {
       return res.json({ ok: true });
     }
 
+    // ANALİZ (GET / cron)
     const pairs = await getActivePairs();
     const infos = [];
 
     for (const symbol of pairs) {
       const { price, changePct } = await fetchBinance1m(symbol);
-      if (!Number.isFinite(price)) continue;
+      if (!Number.isFinite(price)) {
+        console.log("Price missing for", symbol);
+        continue;
+      }
 
       const funding = await getFunding(symbol);
       const oi = await getOI(symbol);
@@ -220,29 +301,34 @@ export default async function handler(req, res) {
       });
     }
 
-    if (infos.length) {
-      let snap = "📍 <b>Nearest Liquidity Snapshot</b>\n\n";
-      for (const x of infos) {
-        snap += `<b>${x.symbol}</b> — ${x.price.toFixed(2)}\n`;
-        if (x.liq.nearestLong) {
-          snap += `• Long: ${x.liq.nearestLong.price.toFixed(2)} (${x.liq.nearestLong.dist.toFixed(2)}%)\n`;
-        }
-        if (x.liq.nearestShort) {
-          snap += `• Short: ${x.liq.nearestShort.price.toFixed(2)} (${x.liq.nearestShort.dist.toFixed(2)}%)\n`;
-        }
-        snap += "\n";
-      }
-      await sendTelegramMessage(snap);
+    // Hiç fiyat alamadıysa bile uygun log
+    if (!infos.length) {
+      await sendTelegramMessage("⚠️ Hiçbir pair için fiyat çekilemedi. Binance/MEXC/Coingecko erişimini kontrol et.");
+      return res.status(200).json({ ok: true, count: 0 });
     }
 
-    if (infos.length) {
-      let sum = "⏱ <b>1m Price & MMYON</b>\n\n";
-      for (const x of infos) {
-        sum += `<b>${x.symbol}</b> ${x.price.toFixed(2)} (${x.changePct.toFixed(2)}%) — MMYON: ${x.mmBrain.mmDir}\n`;
+    // Snapshot
+    let snap = "📍 <b>Nearest Liquidity Snapshot</b>\n\n";
+    for (const x of infos) {
+      snap += `<b>${x.symbol}</b> — ${x.price.toFixed(2)}\n`;
+      if (x.liq.nearestLong) {
+        snap += `• Long: ${x.liq.nearestLong.price.toFixed(2)} (${x.liq.nearestLong.dist.toFixed(2)}%)\n`;
       }
-      await sendTelegramMessage(sum);
+      if (x.liq.nearestShort) {
+        snap += `• Short: ${x.liq.nearestShort.price.toFixed(2)} (${x.liq.nearestShort.dist.toFixed(2)}%)\n`;
+      }
+      snap += "\n";
     }
+    await sendTelegramMessage(snap);
 
+    // Summary
+    let sum = "⏱ <b>1m Price & MMYON</b>\n\n";
+    for (const x of infos) {
+      sum += `<b>${x.symbol}</b> ${x.price.toFixed(2)} (${x.changePct.toFixed(2)}%) — MMYON: ${x.mmBrain.mmDir}\n`;
+    }
+    await sendTelegramMessage(sum);
+
+    // PRO sinyaller
     for (const x of infos) {
       if (!x.signal) continue;
       const s = x.signal;
