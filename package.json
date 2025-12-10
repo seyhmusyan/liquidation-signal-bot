@@ -1,6 +1,6 @@
 {
-  "name": "liquidation-bot-pro",
-  "version": "1.1.0",
+  "name": "liquidation-mm-bot",
+  "version": "1.0.0",
   "type": "module",
   "dependencies": {}
 }
