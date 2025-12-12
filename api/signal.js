@@ -247,6 +247,75 @@ export default async function handler(req, res) {
       const textRaw = (msg.text || "").trim();
       const text = textRaw.toLowerCase();
 
+            // 👇 /mm KOMUTU TAM BURADA
+      if (text.startsWith("/mm")) {
+        const parts = textRaw.split(" ").filter(Boolean);
+        const coin = parts[1] || "BTC";
+        const baseSymbol = coin.toUpperCase().endsWith("USDT")
+          ? coin.toUpperCase()
+          : coin.toUpperCase() + "USDT";
+
+        const info = await analyzeSymbol(baseSymbol);
+        if (!info) {
+          await sendTelegramMessage(`${baseSymbol} analizi alınamadı`, chatId);
+          return res.json({ ok: true });
+        }
+
+        const price = info.price;
+
+        const tfs = ["1h", "12h", "24h"];
+        const results = [];
+
+        for (const tf of tfs) {
+          const r = await getCoinglassMMHeatmap({ baseSymbol, price, tf });
+          if (r) results.push(r);
+        }
+
+        if (!results.length) {
+          await sendTelegramMessage(`${baseSymbol} için heatmap verisi yok`, chatId);
+          return res.json({ ok: true });
+        }
+
+        const maj = majorityMM(results);
+        const bestTf = results.find(x => x.tf === "1h") || results[0];
+        const plan = buildMMPlan({
+          price,
+          mmTarget: maj.final,
+          nearestLong: bestTf.nearestLong,
+          nearestShort: bestTf.nearestShort,
+          symbol: baseSymbol
+        });
+
+        const f = (x) => x == null ? "N/A" : Number(x).toFixed(2);
+
+        let out = `<b>${baseSymbol} MM Heatmap</b>\n\n`;
+        out += `MM Target: <b>${maj.final}</b>\n`;
+        out += `Confidence: <b>${maj.conf}%</b>\n\n`;
+        out += `Yön: <b>${plan.side}</b>\n`;
+        out += `Entry: <b>${f(plan.entry)}</b>\n`;
+        out += `TP1: <b>${f(plan.tp1)}</b>\n`;
+        out += `TP2: <b>${f(plan.tp2)}</b>\n`;
+        out += `SL: <b>${f(plan.sl)}</b>\n\n`;
+
+        for (const r of results) {
+          out += `<b>${r.tf}</b> — ${r.mmTarget}\n`;
+        }
+
+        await sendTelegramMessage(out.trim(), chatId);
+        return res.json({ ok: true });
+      }
+
+      // diğer komutlar burada devam eder
+    }
+
+    return res.json({ ok: true });
+  } catch (e) {
+    console.error("signal error", e);
+    return res.status(500).json({ error: e.toString() });
+  }
+}
+
+
       if (text === "/pairs") {
         await sendTelegramMessage("📊 Aktif Pariteler:\n• BTCUSDT\n• AVAXUSDT", chatId);
         return res.json({ ok: true });
