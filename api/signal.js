@@ -13,7 +13,71 @@ import { interpretOiFunding } from "../utils/oi_funding.js";
 import { computeMMYON } from "../utils/mmbrain.js";
 import { getAdvancedLSR } from "../utils/lsr.js";
 
-// ---------------- PRICE ENGINE ----------------
+function fmtNotional(v) {
+  if (!Number.isFinite(v)) return "N/A";
+  if (v >= 1_000_000_000) return (v / 1_000_000_000).toFixed(2) + "B";
+  if (v >= 1_000_000) return (v / 1_000_000).toFixed(2) + "M";
+  if (v >= 1_000) return (v / 1_000).toFixed(2) + "K";
+  return v.toFixed(0);
+}
+
+function pickEntryByLiquidity(direction, price, liq) {
+  if (direction === "LONG") {
+    if (liq?.nearestBid && liq.nearestBid.dist <= 0.4) return liq.nearestBid.price * 1.0005;
+    if (liq?.topLong?.[0] && liq.topLong[0].dist <= 1.0) return liq.topLong[0].price * 1.0005;
+    return price;
+  }
+  if (direction === "SHORT") {
+    if (liq?.nearestAsk && liq.nearestAsk.dist <= 0.4) return liq.nearestAsk.price * 0.9995;
+    if (liq?.topShort?.[0] && liq.topShort[0].dist <= 1.0) return liq.topShort[0].price * 0.9995;
+    return price;
+  }
+  return price;
+}
+
+function getMMTarget({ funding, lsr, liq }) {
+  let longCrowded = false;
+  let shortCrowded = false;
+
+  if (typeof funding === "number") {
+    if (funding > 0.0003) longCrowded = true;
+    if (funding < -0.0003) shortCrowded = true;
+  }
+  if (lsr?.ratio) {
+    if (lsr.ratio >= 1.15) longCrowded = true;
+    if (lsr.ratio <= 0.87) shortCrowded = true;
+  }
+
+  if (longCrowded && !shortCrowded) return "LONGS";
+  if (shortCrowded && !longCrowded) return "SHORTS";
+
+  const longPool = (liq?.topLong?.[0]?.value || 0) + (liq?.topLong?.[1]?.value || 0);
+  const shortPool = (liq?.topShort?.[0]?.value || 0) + (liq?.topShort?.[1]?.value || 0);
+
+  if (longPool > shortPool * 1.2) return "LONGS";
+  if (shortPool > longPool * 1.2) return "SHORTS";
+  return "UNCLEAR";
+}
+
+function buildPositionLevels(direction, price, liq) {
+  const entry = pickEntryByLiquidity(direction, price, liq);
+
+  if (direction === "SHORT") {
+    const tp1 = liq?.topLong?.[0]?.price ?? null;
+    const tp2 = liq?.topLong?.[1]?.price ?? null;
+    const sl  = liq?.topShort?.[0]?.price ?? (liq?.nearestAsk?.price ?? null);
+    return { entry, tp1, tp2, sl };
+  }
+
+  if (direction === "LONG") {
+    const tp1 = liq?.topShort?.[0]?.price ?? null;
+    const tp2 = liq?.topShort?.[1]?.price ?? null;
+    const sl  = liq?.topLong?.[0]?.price ?? (liq?.nearestBid?.price ?? null);
+    return { entry, tp1, tp2, sl };
+  }
+
+  return { entry, tp1: null, tp2: null, sl: null };
+}
 
 async function fetchFallbackPrice(symbol) {
   try {
@@ -37,9 +101,7 @@ async function fetchFallbackPrice(symbol) {
 
 async function fetchBinance1m(symbol) {
   try {
-    const r = await fetch(
-      `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=1m&limit=3`
-    );
+    const r = await fetch(`https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=1m&limit=3`);
     if (!r.ok) {
       const fp = await fetchFallbackPrice(symbol);
       return { price: fp, changePct: 0, volSpike: 1 };
@@ -64,7 +126,6 @@ async function fetchBinance1m(symbol) {
 
     const changePct = (price - prevClose) / prevClose * 100;
     const volSpike = prevVol > 0 ? lastVol / prevVol : 1;
-
     return { price, changePct, volSpike };
   } catch (e) {
     console.error("Binance 1m error", symbol, e);
@@ -73,105 +134,58 @@ async function fetchBinance1m(symbol) {
   }
 }
 
-// ---------------- PRO SIGNAL ----------------
-
-function buildSignal({ symbol, price, score }) {
-  if (!Number.isFinite(price)) return null;
-  const s = Math.max(0, Math.min(2, score || 0));
-  const norm = Math.min(1, s / 1.5);
-  const confidence = Math.round(50 + norm * 50);
-  if (confidence < 70) return null;
-
-  const side = norm >= 0.5 ? "LONG" : "SHORT";
-
-  const tp1 = side === "LONG" ? price * 1.004 : price * 0.996;
-  const tp2 = side === "LONG" ? price * 1.008 : price * 0.992;
-  const sl  = side === "LONG" ? price * 0.992 : price * 1.008;
-
-  return { symbol, side, entry: price, tp1, tp2, sl, confidence };
-}
-
-// ---------------- POSITION DIRECTION ENGINE ----------------
-
 function buildPositionDirection(info) {
-  const { symbol, price, mm, oiInterp, lsr, funding, whales, manip, pumpDump } = info;
+  const { mm, oiInterp, lsr, funding, whales, manip, pumpDump } = info;
 
-  let dir = mm.mmDir; // LONG / SHORT / AVOID
   let scoreLong = mm.scoreLong ?? 0;
   let scoreShort = mm.scoreShort ?? 0;
 
-  // OI bias ek ağırlık
   if (oiInterp.bias > 0.05) scoreLong += 0.2;
   if (oiInterp.bias < -0.05) scoreShort += 0.2;
 
-  // Long/Short ratio >1.1 ise long baskın, <0.9 ise short baskın
-  if (lsr && lsr.ratio) {
+  if (lsr?.ratio) {
     if (lsr.ratio > 1.1) scoreLong += 0.2;
     if (lsr.ratio < 0.9) scoreShort += 0.2;
   }
 
-  // Funding yüksek pozitif → short lehine
   if (typeof funding === "number" && funding > 0.0007) scoreShort += 0.2;
   if (typeof funding === "number" && funding < -0.0007) scoreLong += 0.2;
 
-  // Whale tarafı
   if (whales.side === "BUY") scoreLong += 0.3;
   if (whales.side === "SELL") scoreShort += 0.3;
 
-  // Pump/Dump etiketi
   if (pumpDump.label === "PUMP") scoreLong += 0.2;
   if (pumpDump.label === "DUMP") scoreShort += 0.2;
 
-  // Manip yüksek ise pozisyon açmama yönünde
-  let avoidBoost = 0;
-  if (manip.manipulationScore > 0.7) {
-    avoidBoost = 0.5;
-  }
+  let direction = "AVOID";
+  if (scoreLong > scoreShort * 1.1 && scoreLong > 0.5) direction = "LONG";
+  else if (scoreShort > scoreLong * 1.1 && scoreShort > 0.5) direction = "SHORT";
 
-  let finalDir = "AVOID";
-  if (scoreLong > scoreShort * 1.1 && scoreLong > 0.5) finalDir = "LONG";
-  else if (scoreShort > scoreLong * 1.1 && scoreShort > 0.5) finalDir = "SHORT";
+  if (manip.manipulationScore > 0.7) direction = "AVOID";
 
-  if (avoidBoost > 0 && manip.manipulationScore > 0.7) {
-    // manip çok yüksek → her zaman AVOID
-    finalDir = "AVOID";
-  }
-
-  // Confidence hesapla
   let rawConf = Math.max(scoreLong, scoreShort);
   rawConf += Math.abs(oiInterp.bias) * 0.5;
-  if (lsr && lsr.ratio) rawConf += Math.abs(lsr.ratio - 1) * 0.3;
+  if (lsr?.ratio) rawConf += Math.abs(lsr.ratio - 1) * 0.3;
   rawConf = Math.min(rawConf, 2.5);
 
-  let confidence = Math.round(50 + (rawConf / 2.5) * 49); // 50–99
-  if (finalDir === "AVOID") confidence = Math.min(confidence, 70);
+  let confidence = Math.round(50 + (rawConf / 2.5) * 49);
+  if (direction === "AVOID") confidence = Math.min(confidence, 70);
 
   const reasons = [];
-
-  if (finalDir === "LONG") reasons.push("Ağırlıklar long yönünü destekliyor");
-  if (finalDir === "SHORT") reasons.push("Ağırlıklar short yönünü destekliyor");
-  if (finalDir === "AVOID") reasons.push("Manipülasyon / kararsız yapı nedeniyle pozisyon kaçınma öneriliyor");
+  if (direction === "LONG") reasons.push("Ağırlıklar long yönünü destekliyor");
+  if (direction === "SHORT") reasons.push("Ağırlıklar short yönünü destekliyor");
+  if (direction === "AVOID") reasons.push("Manipülasyon / kararsız yapı nedeniyle pozisyon kaçınma öneriliyor");
 
   if (oiInterp.notes?.length) reasons.push(...oiInterp.notes);
   if (pumpDump.notes?.length) reasons.push(...pumpDump.notes);
   if (manip.notes?.length) reasons.push(...manip.notes);
 
-  return {
-    symbol,
-    direction: finalDir,
-    confidence,
-    reasons
-  };
+  return { direction, confidence, reasons };
 }
-
-// ---------------- ORTAK ANALİZ FONKSİYONU ----------------
 
 async function analyzeSymbol(symbol) {
   const { price, changePct, volSpike } = await fetchBinance1m(symbol);
-  if (!Number.isFinite(price)) {
-    console.log("Price missing for", symbol);
-    return null;
-  }
+  if (!Number.isFinite(price)) return null;
 
   const [funding, oiNow, liq, whales, arb, manip] = await Promise.all([
     getFunding(symbol),
@@ -191,11 +205,7 @@ async function analyzeSymbol(symbol) {
     funding
   });
 
-  const lsr = await getAdvancedLSR(symbol, {
-    funding,
-    oiBias: oiInterp.bias,
-    whales
-  });
+  const lsr = await getAdvancedLSR(symbol, { funding, oiBias: oiInterp.bias, whales });
 
   const mm = computeMMYON({
     liqScore: liq.score,
@@ -206,34 +216,31 @@ async function analyzeSymbol(symbol) {
     arbSide: arb.side
   });
 
-  const combinedScore = Math.max(mm.totalScore, pumpDump.pumpScore, pumpDump.dumpScore);
-  const signal = buildSignal({ symbol, price, score: combinedScore });
-
-  return {
-    symbol,
-    price,
-    changePct,
-    volSpike,
-    funding,
-    oiNow,
-    lsr,
-    liq,
-    whales,
-    arb,
-    manip,
-    pumpDump,
-    oiInterp,
-    mm,
-    combinedScore,
-    signal
-  };
+  return { symbol, price, changePct, volSpike, funding, oiNow, lsr, liq, whales, arb, manip, pumpDump, oiInterp, mm };
 }
 
-// ---------------- HANDLER ----------------
+function renderLiquidityZones(liq) {
+  const lines = [];
+  const long1 = liq?.topLong?.[0];
+  const long2 = liq?.topLong?.[1];
+  const short1 = liq?.topShort?.[0];
+  const short2 = liq?.topShort?.[1];
+
+  if (long1) lines.push(`• Nearest LONG: ${long1.price.toFixed(2)} | ${fmtNotional(long1.value)} | ${long1.dist.toFixed(2)}%`);
+  if (long2) lines.push(`• Next LONG: ${long2.price.toFixed(2)} | ${fmtNotional(long2.value)} | ${long2.dist.toFixed(2)}%`);
+  if (short1) lines.push(`• Nearest SHORT: ${short1.price.toFixed(2)} | ${fmtNotional(short1.value)} | ${short1.dist.toFixed(2)}%`);
+  if (short2) lines.push(`• Next SHORT: ${short2.price.toFixed(2)} | ${fmtNotional(short2.value)} | ${short2.dist.toFixed(2)}%`);
+
+  return lines.length ? lines.join("\n") : "N/A";
+}
+
+function renderLevels(levels) {
+  const f = (x) => (x == null || !Number.isFinite(x)) ? "N/A" : Number(x).toFixed(2);
+  return `Entry: <b>${f(levels.entry)}</b>\nTP1: <b>${f(levels.tp1)}</b>\nTP2: <b>${f(levels.tp2)}</b>\nSL: <b>${f(levels.sl)}</b>`;
+}
 
 export default async function handler(req, res) {
   try {
-    // TELEGRAM WEBHOOK / KOMUTLAR
     if (req.method === "POST" && req.body?.message) {
       const msg = req.body.message;
       const chatId = msg.chat.id;
@@ -245,111 +252,76 @@ export default async function handler(req, res) {
         return res.json({ ok: true });
       }
 
-      if (text === "/btc" || text.startsWith("/btc@")) {
-        const info = await analyzeSymbol("BTCUSDT");
-        if (!info) {
-          await sendTelegramMessage("BTC analizi alınamadı.", chatId);
-          return res.json({ ok: true });
-        }
-        const pos = buildPositionDirection(info);
+      const cmd =
+        text === "/btc" || text.startsWith("/btc@") ? "BTCUSDT" :
+        text === "/avax" || text.startsWith("/avax@") ? "AVAXUSDT" :
+        text === "/dir" || text.startsWith("/dir@") ? "DIR" :
+        null;
 
-        const msgText = `
-<b>BTCUSDT Pozisyon Yönü</b>
-
-Yön: <b>${pos.direction}</b>
-Confidence: <b>${pos.confidence}%</b>
-MMYON: <b>${info.mm.mmDir}</b>
-
-Fiyat: ${info.price.toFixed(2)} (${info.changePct.toFixed(2)}% 1m)
-Funding: ${info.funding != null ? info.funding.toFixed(5) : "N/A"}
-OI: ${info.oiNow != null ? info.oiNow.toFixed(0) : "N/A"}
-Long/Short: ${info.lsr ? info.lsr.ratio.toFixed(2) + " (" + info.lsr.source + ")" : "N/A"}
-Manip Score: ${info.manip.manipulationScore.toFixed(2)}
-
-Bid Cluster: ${info.liq.nearestLong ? info.liq.nearestLong.price.toFixed(2) + " (" + info.liq.nearestLong.dist.toFixed(2) + "%)" : "N/A"}
-Ask Cluster: ${info.liq.nearestShort ? info.liq.nearestShort.price.toFixed(2) + " (" + info.liq.nearestShort.dist.toFixed(2) + "%)" : "N/A"}
-
-Özet:
-${pos.reasons.length ? pos.reasons.map(r => "• " + r).join("\n") : "N/A"}
-
-TradingView:
-${buildTradingViewLink("BTCUSDT")}
-        `.trim();
-
-        await sendTelegramMessage(msgText, chatId);
-        return res.json({ ok: true });
-      }
-
-      if (text === "/avax" || text.startsWith("/avax@")) {
-        const info = await analyzeSymbol("AVAXUSDT");
-        if (!info) {
-          await sendTelegramMessage("AVAX analizi alınamadı.", chatId);
-          return res.json({ ok: true });
-        }
-        const pos = buildPositionDirection(info);
-
-        const msgText = `
-<b>AVAXUSDT Pozisyon Yönü</b>
-
-Yön: <b>${pos.direction}</b>
-Confidence: <b>${pos.confidence}%</b>
-MMYON: <b>${info.mm.mmDir}</b>
-
-Fiyat: ${info.price.toFixed(2)} (${info.changePct.toFixed(2)}% 1m)
-Funding: ${info.funding != null ? info.funding.toFixed(5) : "N/A"}
-OI: ${info.oiNow != null ? info.oiNow.toFixed(0) : "N/A"}
-Long/Short: ${info.lsr ? info.lsr.ratio.toFixed(2) + " (" + info.lsr.source + ")" : "N/A"}
-Manip Score: ${info.manip.manipulationScore.toFixed(2)}
-
-Bid Cluster: ${info.liq.nearestLong ? info.liq.nearestLong.price.toFixed(2) + " (" + info.liq.nearestLong.dist.toFixed(2) + "%)" : "N/A"}
-Ask Cluster: ${info.liq.nearestShort ? info.liq.nearestShort.price.toFixed(2) + " (" + info.liq.nearestShort.dist.toFixed(2) + "%)" : "N/A"}
-
-Özet:
-${pos.reasons.length ? pos.reasons.map(r => "• " + r).join("\n") : "N/A"}
-
-TradingView:
-${buildTradingViewLink("AVAXUSDT")}
-        `.trim();
-
-        await sendTelegramMessage(msgText, chatId);
-        return res.json({ ok: true });
-      }
-
-      if (text === "/dir" || text.startsWith("/dir@")) {
-        const [btcInfo, avaxInfo] = await Promise.all([
-          analyzeSymbol("BTCUSDT"),
-          analyzeSymbol("AVAXUSDT")
-        ]);
-
+      if (cmd === "DIR") {
+        const [btc, avax] = await Promise.all([analyzeSymbol("BTCUSDT"), analyzeSymbol("AVAXUSDT")]);
         let out = "<b>Pozisyon Yön Özeti</b>\n\n";
-
-        if (btcInfo) {
-          const p = buildPositionDirection(btcInfo);
-          out += `<b>BTCUSDT</b>\nYön: <b>${p.direction}</b> (${p.confidence}%)  |  MMYON: ${btcInfo.mm.mmDir}\n\n`;
-        } else {
-          out += "BTCUSDT analizi alınamadı.\n\n";
+        if (btc) {
+          const pos = buildPositionDirection(btc);
+          out += `<b>BTCUSDT</b> — <b>${pos.direction}</b> (${pos.confidence}%) | MMYON: ${btc.mm.mmDir}\n`;
         }
-
-        if (avaxInfo) {
-          const p = buildPositionDirection(avaxInfo);
-          out += `<b>AVAXUSDT</b>\nYön: <b>${p.direction}</b> (${p.confidence}%)  |  MMYON: ${avaxInfo.mm.mmDir}\n`;
-        } else {
-          out += "AVAXUSDT analizi alınamadı.\n";
+        if (avax) {
+          const pos = buildPositionDirection(avax);
+          out += `<b>AVAXUSDT</b> — <b>${pos.direction}</b> (${pos.confidence}%) | MMYON: ${avax.mm.mmDir}\n`;
         }
-
         await sendTelegramMessage(out.trim(), chatId);
         return res.json({ ok: true });
       }
 
-      // default
+      if (cmd) {
+        const info = await analyzeSymbol(cmd);
+        if (!info) {
+          await sendTelegramMessage(`${cmd} analizi alınamadı.`, chatId);
+          return res.json({ ok: true });
+        }
+
+        const pos = buildPositionDirection(info);
+        const mmTarget = getMMTarget({ funding: info.funding, lsr: info.lsr, liq: info.liq });
+        const levels = buildPositionLevels(pos.direction, info.price, info.liq);
+
+        const msgText = `
+<b>${cmd} Pozisyon Analizi</b>
+
+Yön: <b>${pos.direction}</b>
+Confidence: <b>${pos.confidence}%</b>
+MMYON: <b>${info.mm.mmDir}</b>
+
+Market Maker Target:
+Likely to liquidate: <b>${mmTarget}</b>
+
+${renderLevels(levels)}
+
+Liquidity Zones:
+${renderLiquidityZones(info.liq)}
+
+Fiyat: ${info.price.toFixed(2)} (${info.changePct.toFixed(2)}% 1m)
+Funding: ${info.funding != null ? info.funding.toFixed(5) : "N/A"}
+OI: ${info.oiNow != null ? info.oiNow.toFixed(0) : "N/A"}
+Long/Short: ${info.lsr ? info.lsr.ratio.toFixed(2) + " (" + info.lsr.source + ")" : "N/A"}
+Manip Score: ${info.manip.manipulationScore.toFixed(2)}
+
+Özet:
+${pos.reasons.length ? pos.reasons.map(r => "• " + r).join("\n") : "N/A"}
+
+TradingView:
+${buildTradingViewLink(cmd)}
+        `.trim();
+
+        await sendTelegramMessage(msgText, chatId);
+        return res.json({ ok: true });
+      }
+
       await sendTelegramMessage("Komutlar:\n/pairs\n/btc\n/avax\n/dir", chatId);
       return res.json({ ok: true });
     }
 
-    // CRON / GET → periyodik tam analiz
     const pairs = await getActivePairs();
     const infos = [];
-
     for (const symbol of pairs) {
       const info = await analyzeSymbol(symbol);
       if (info) infos.push(info);
@@ -360,88 +332,20 @@ ${buildTradingViewLink("AVAXUSDT")}
       return res.status(200).json({ ok: true, count: 0 });
     }
 
-    // Snapshot
     let snap = "📍 <b>Nearest Liquidity Snapshot</b>\n\n";
     for (const x of infos) {
       snap += `<b>${x.symbol}</b> — ${x.price.toFixed(2)}\n`;
-      if (x.liq.nearestLong) {
-        snap += `• Bid Cluster: ${x.liq.nearestLong.price.toFixed(2)} (${x.liq.nearestLong.dist.toFixed(2)}%)\n`;
-      }
-      if (x.liq.nearestShort) {
-        snap += `• Ask Cluster: ${x.liq.nearestShort.price.toFixed(2)} (${x.liq.nearestShort.dist.toFixed(2)}%)\n`;
-      }
+      if (x.liq.nearestBid) snap += `• Bid: ${x.liq.nearestBid.price.toFixed(2)} (${x.liq.nearestBid.dist.toFixed(2)}%)\n`;
+      if (x.liq.nearestAsk) snap += `• Ask: ${x.liq.nearestAsk.price.toFixed(2)} (${x.liq.nearestAsk.dist.toFixed(2)}%)\n`;
       snap += "\n";
     }
     await sendTelegramMessage(snap);
 
-    // MMYON summary
     let sum = "⏱ <b>1m Price & MMYON</b>\n\n";
     for (const x of infos) {
       sum += `<b>${x.symbol}</b> ${x.price.toFixed(2)} (${x.changePct.toFixed(2)}%) — MMYON: ${x.mm.mmDir}\n`;
     }
     await sendTelegramMessage(sum);
-
-    // Detaylı Premium raporlar
-    for (const x of infos) {
-      const alerts = [];
-
-      if (x.pumpDump.label === "PUMP") alerts.push("🔥 Pump Alert");
-      if (x.pumpDump.label === "DUMP") alerts.push("⚠ Dump Alert");
-      if (x.whales.whaleScore > 0) alerts.push("🐋 Whale Activity");
-      if (x.manip.manipulationScore > 0.7) alerts.push("🎭 Manipulation Risk");
-      if (Math.abs(x.arb.spreadPct) >= 0.15) alerts.push("🔁 Arbitrage Anomaly");
-
-      const alertLine = alerts.length ? alerts.join(" | ") : "—";
-
-      const notes = [
-        ...x.pumpDump.notes,
-        ...x.oiInterp.notes,
-        ...x.mm.notes,
-        ...x.manip.notes
-      ].filter(Boolean);
-
-      const notesText = notes.length ? notes.map(n => "• " + n).join("\n") : "N/A";
-
-      const sig = x.signal;
-
-      const msg = `
-<b>${x.symbol}</b> Premium MM Raporu
-
-Durum: ${alertLine}
-MMYON: <b>${x.mm.mmDir}</b>
-
-Fiyat: ${x.price.toFixed(2)} (${x.changePct.toFixed(2)}% 1m)
-Funding: ${x.funding != null ? x.funding.toFixed(5) : "N/A"}
-OI: ${x.oiNow != null ? x.oiNow.toFixed(0) : "N/A"}
-Long/Short: ${x.lsr ? x.lsr.ratio.toFixed(2) + " (" + x.lsr.source + ")" : "N/A"}
-Arb: ${x.arb.spreadPct.toFixed(3)}% (${x.arb.side || "N/A"})
-
-Bid Cluster: ${x.liq.nearestLong ? x.liq.nearestLong.price.toFixed(2) + " (" + x.liq.nearestLong.dist.toFixed(2) + "%)" : "N/A"}
-Ask Cluster: ${x.liq.nearestShort ? x.liq.nearestShort.price.toFixed(2) + " (" + x.liq.nearestShort.dist.toFixed(2) + "%)" : "N/A"}
-
-Whale trades: ${x.whales.whaleScore}
-Pump/Dump: ${x.pumpDump.label || "Yok"}
-Manip Score: ${x.manip.manipulationScore.toFixed(2)}
-
-Notlar:
-${notesText}
-
-TradingView:
-${buildTradingViewLink(x.symbol)}
-
-${sig ? `
-<b>PRO SIGNAL</b>
-Side: <b>${sig.side}</b>
-Entry: <b>${sig.entry.toFixed(2)}</b>
-TP1: <b>${sig.tp1.toFixed(2)}</b>
-TP2: <b>${sig.tp2.toFixed(2)}</b>
-SL: <b>${sig.sl.toFixed(2)}</b>
-Confidence: <b>${sig.confidence}%</b>
-`.trim() : ""}
-      `.trim();
-
-      await sendTelegramMessage(msg);
-    }
 
     return res.status(200).json({ ok: true, count: infos.length });
   } catch (e) {
