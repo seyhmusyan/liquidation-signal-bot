@@ -353,3 +353,61 @@ ${buildTradingViewLink(cmd)}
     return res.status(500).json({ error: e.toString() });
   }
 }
+
+import { getCoinglassMMHeatmap, buildMMPlan, majorityMM } from "../utils/mmHeatmap.js";
+
+// ...
+if (text.startsWith("/mm")) {
+  const parts = textRaw.split(" ").filter(Boolean);
+  const coin = parts[1] || "BTC";
+  const baseSymbol = coin.toUpperCase().endsWith("USDT") ? coin.toUpperCase() : coin.toUpperCase() + "USDT";
+
+  // fiyatı senin mevcut fiyat fonksiyonundan al (binance 1m kapanış)
+  const info = await analyzeSymbol(baseSymbol);
+  if (!info) {
+    await sendTelegramMessage(`${baseSymbol} için fiyat alınamadı`, chatId);
+    return res.json({ ok: true });
+  }
+
+  const price = info.price;
+
+  const tfs = ["1h","12h","24h"];
+  const results = [];
+  for (const tf of tfs) {
+    const cg = await getCoinglassMMHeatmap({ baseSymbol, price, tf });
+    if (cg) results.push(cg);
+  }
+
+  if (!results.length) {
+    await sendTelegramMessage(`${baseSymbol} heatmap verisi alınamadı (COINGLASS_API kontrol et)`, chatId);
+    return res.json({ ok: true });
+  }
+
+  const maj = majorityMM(results);
+  const bestTf = results.find(x => x.tf === "1h") || results[0];
+
+  const plan = buildMMPlan({
+    price,
+    mmTarget: maj.final,
+    nearestLong: bestTf.nearestLong,
+    nearestShort: bestTf.nearestShort,
+    symbol: baseSymbol
+  });
+
+  const fmt = (x) => x == null ? "N/A" : Number(x).toFixed(2);
+
+  let out = `<b>${baseSymbol} MM Heatmap</b>\n\n`;
+  out += `MM Target: <b>${maj.final}</b>\n`;
+  out += `Confidence: <b>${maj.conf}%</b>\n\n`;
+  out += `Yön: <b>${plan.side}</b>\n`;
+  out += `Entry: <b>${fmt(plan.entry)}</b>\nTP1: <b>${fmt(plan.tp1)}</b>\nTP2: <b>${fmt(plan.tp2)}</b>\nSL: <b>${fmt(plan.sl)}</b>\n\n`;
+
+  for (const r of results) {
+    out += `<b>${r.tf}</b> — Target: ${r.mmTarget}\n`;
+    out += `Nearest Long: ${r.nearestLong ? fmt(r.nearestLong.price) + " (" + r.nearestLong.distPct.toFixed(2) + "%)" : "N/A"}\n`;
+    out += `Nearest Short: ${r.nearestShort ? fmt(r.nearestShort.price) + " (" + r.nearestShort.distPct.toFixed(2) + "%)" : "N/A"}\n\n`;
+  }
+
+  await sendTelegramMessage(out.trim(), chatId);
+  return res.json({ ok: true });
+}
