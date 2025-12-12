@@ -1,7 +1,6 @@
 export const config = { runtime: "nodejs" };
 
-// ===== IMPORTS (SADECE BURADA) =====
-import { getActivePairs } from "../utils/pairsStore.js";
+// ===== IMPORTS =====
 import { sendTelegramMessage } from "../utils/telegram.js";
 import { buildTradingViewLink } from "../utils/tradingview.js";
 
@@ -18,13 +17,11 @@ import { getAdvancedLSR } from "../utils/lsr.js";
 import {
   getCoinglassMMHeatmap,
   buildMMPlan,
-  majorityMM
+  resolveMMTargetWithFallback
 } from "../utils/mmHeatmap.js";
 
 // ===== HELPERS =====
-function f(x) {
-  return x == null || !Number.isFinite(x) ? "N/A" : Number(x).toFixed(2);
-}
+const f = (x) => (x == null || !Number.isFinite(x)) ? "N/A" : Number(x).toFixed(2);
 
 // ===== CORE ANALYSIS =====
 async function analyzeSymbol(symbol) {
@@ -86,7 +83,7 @@ async function analyzeSymbol(symbol) {
   };
 }
 
-// ===== HANDLER (TEK VE NET) =====
+// ===== HANDLER =====
 export default async function handler(req, res) {
   try {
     if (req.method !== "POST" || !req.body?.message) {
@@ -100,7 +97,10 @@ export default async function handler(req, res) {
 
     // ===== /pairs =====
     if (text === "/pairs") {
-      await sendTelegramMessage("📊 Aktif Pariteler:\n• BTCUSDT\n• AVAXUSDT", chatId);
+      await sendTelegramMessage(
+        "📊 Komut Kullanımı:\n/mm BTC\n/mm AVAX\n/mm SOL\n/mm DOGE\n\nHerhangi bir USDT paritesi yazabilirsin.",
+        chatId
+      );
       return res.json({ ok: true });
     }
 
@@ -113,7 +113,7 @@ export default async function handler(req, res) {
 
       const info = await analyzeSymbol(symbol);
       if (!info) {
-        await sendTelegramMessage(`${symbol} analiz alınamadı`, chatId);
+        await sendTelegramMessage(`${symbol} için veri alınamadı`, chatId);
         return res.json({ ok: true });
       }
 
@@ -122,37 +122,54 @@ export default async function handler(req, res) {
       const results = [];
 
       for (const tf of tfs) {
-        const r = await getCoinglassMMHeatmap({ baseSymbol: symbol, price, tf });
+        const r = await getCoinglassMMHeatmap({
+          baseSymbol: symbol,
+          price,
+          tf
+        });
         if (r) results.push(r);
       }
 
-      if (!results.length) {
-        await sendTelegramMessage(`${symbol} heatmap verisi yok`, chatId);
-        return res.json({ ok: true });
-      }
+      const mm = resolveMMTargetWithFallback(results, {
+        funding: info.funding,
+        lsr: info.lsr?.ratio,
+        oiBias: info.oiInterp?.bias
+      });
 
-      const maj = majorityMM(results);
-      const base = results[0];
+      const base = results[0] || {};
       const plan = buildMMPlan({
         price,
-        mmTarget: maj.final,
+        mmTarget: mm.target,
         nearestLong: base.nearestLong,
         nearestShort: base.nearestShort,
         symbol
       });
 
       let out = `<b>${symbol} MM Heatmap</b>\n\n`;
-      out += `MM Target: <b>${maj.final}</b>\n`;
-      out += `Confidence: <b>${maj.conf}%</b>\n\n`;
+      out += `MM Target: <b>${mm.target}</b>\n`;
+      out += `Confidence: <b>${mm.conf}%</b>\n`;
+      out += `MMYON: <b>${info.mm.mmDir}</b>\n\n`;
+
       out += `Yön: <b>${plan.side}</b>\n`;
       out += `Entry: <b>${f(plan.entry)}</b>\n`;
       out += `TP1: <b>${f(plan.tp1)}</b>\n`;
       out += `TP2: <b>${f(plan.tp2)}</b>\n`;
       out += `SL: <b>${f(plan.sl)}</b>\n\n`;
 
-      for (const r of results) {
-        out += `<b>${r.tf}</b> → ${r.mmTarget}\n`;
+      out += `Funding: ${info.funding != null ? info.funding.toFixed(5) : "N/A"}\n`;
+      out += `OI: ${info.oiNow != null ? info.oiNow.toFixed(0) : "N/A"}\n`;
+      out += `Long/Short: ${
+        info.lsr ? info.lsr.ratio.toFixed(2) + " (" + info.lsr.source + ")" : "N/A"
+      }\n`;
+      out += `Manip Score: ${info.manip.manipulationScore.toFixed(2)}\n\n`;
+
+      if (results.length) {
+        for (const r of results) {
+          out += `${r.tf} → ${r.mmTarget}\n`;
+        }
       }
+
+      out += `\nTradingView:\n${buildTradingViewLink(symbol)}`;
 
       await sendTelegramMessage(out.trim(), chatId);
       return res.json({ ok: true });
@@ -160,7 +177,7 @@ export default async function handler(req, res) {
 
     // ===== DEFAULT =====
     await sendTelegramMessage(
-      "Komutlar:\n/pairs\n/btc\n/avax\n/mm btc\n/mm avax",
+      "Komutlar:\n/mm BTC\n/mm AVAX\n/mm SOL\n/mm ETH\n/mm DOGE",
       chatId
     );
     return res.json({ ok: true });
