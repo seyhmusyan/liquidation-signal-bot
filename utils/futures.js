@@ -2,9 +2,7 @@ const FAPI_BASE = "https://fapi.binance.com";
 
 export async function getFunding(symbol) {
   try {
-    const r = await fetch(
-      `${FAPI_BASE}/fapi/v1/fundingRate?symbol=${symbol}&limit=1`
-    );
+    const r = await fetch(`${FAPI_BASE}/fapi/v1/fundingRate?symbol=${symbol}&limit=1`);
     if (!r.ok) return null;
     const arr = await r.json();
     if (!Array.isArray(arr) || !arr.length) return null;
@@ -19,9 +17,7 @@ export async function getFunding(symbol) {
 
 export async function getOI(symbol) {
   try {
-    const r = await fetch(
-      `${FAPI_BASE}/fapi/v1/openInterest?symbol=${symbol}`
-    );
+    const r = await fetch(`${FAPI_BASE}/fapi/v1/openInterest?symbol=${symbol}`);
     if (!r.ok) return null;
     const j = await r.json();
     const oi = Number(j.openInterest);
@@ -32,7 +28,6 @@ export async function getOI(symbol) {
   }
 }
 
-// basic Binance taker long/short, used as first layer if available
 export async function getLongShort(symbol) {
   try {
     const r = await fetch(
@@ -45,8 +40,7 @@ export async function getLongShort(symbol) {
     const buy = Number(row.buyVol);
     const sell = Number(row.sellVol);
     if (!Number.isFinite(buy) || !Number.isFinite(sell) || !sell) return null;
-    const ratio = buy / sell;
-    return ratio;
+    return buy / sell;
   } catch (e) {
     console.error("longShort error", symbol, e);
     return null;

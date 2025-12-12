@@ -11,7 +11,3 @@ export async function addPair() {
 export async function removePair() {
   return PAIRS;
 }
-
-export function toSymbol(symbol) {
-  return symbol;
-}

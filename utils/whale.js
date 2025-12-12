@@ -15,15 +15,9 @@ export async function detectWhales(symbol) {
       const notional = price * qty;
 
       const threshold = symbol.startsWith("BTC") ? 200_000 : 50_000;
-      if (notional >= threshold) {
-        bigTrades.push({ price, qty, notional, isBuyerMaker: t.isBuyerMaker });
-      }
+      if (notional >= threshold) bigTrades.push({ price, qty, notional, isBuyerMaker: t.isBuyerMaker });
 
-      if (t.isBuyerMaker) {
-        sellNotional += notional;
-      } else {
-        buyNotional += notional;
-      }
+      if (t.isBuyerMaker) sellNotional += notional; else buyNotional += notional;
     }
 
     const total = buyNotional + sellNotional;
@@ -34,8 +28,7 @@ export async function detectWhales(symbol) {
     if (buyRatio > 0.6) side = "BUY";
     else if (buyRatio < 0.4) side = "SELL";
 
-    const whaleScore = bigTrades.length;
-    return { whaleScore, side, bigTrades };
+    return { whaleScore: bigTrades.length, side, bigTrades };
   } catch (e) {
     console.error("whale detect error", symbol, e);
     return { whaleScore: 0, side: null, bigTrades: [] };

@@ -3,14 +3,8 @@ export function detectPumpDump({ changePct, volSpike }) {
   let dumpScore = 0;
   const notes = [];
 
-  if (changePct > 0.3) {
-    pumpScore += changePct / 0.3;
-    notes.push("Fiyat kısa sürede güçlü yukarı hareket");
-  }
-  if (changePct < -0.3) {
-    dumpScore += Math.abs(changePct) / 0.3;
-    notes.push("Fiyat kısa sürede güçlü aşağı hareket");
-  }
+  if (changePct > 0.3) { pumpScore += changePct / 0.3; notes.push("Fiyat kısa sürede güçlü yukarı hareket"); }
+  if (changePct < -0.3) { dumpScore += Math.abs(changePct) / 0.3; notes.push("Fiyat kısa sürede güçlü aşağı hareket"); }
 
   if (volSpike > 2) {
     pumpScore *= 1.2;
